@@ -274,6 +274,7 @@ let me = null;                    // 내 캐릭터 (참가자일 때만)
 let others = {};                  // 다른 사람들
 let scores = {};                  // id → { s, c, alive, cause, x, y, name, ch }
 let cam = 1, watchId = null, watchPinned = false;
+let bubbles = {};
 let deaths = [], feed = [], emos = {}, itemsTaken = new Set(), fogUntil = 0, reverseUntil = 0, lastEmo = 0;
 let allDeadAt = 0, coinsTaken = new Set(), particles = [], marks = [], lastResult = null;
 
@@ -371,6 +372,7 @@ function onPresence(list) {
 
 // ===================== 메시지 처리 =====================
 function handle(m) {
+  if (m.t === "chat" && m.id) bubbles[m.id] = { text: m.text, at: performance.now() };   // 크아처럼 머리 위 말풍선
   if (m.t === "chat") { const d = document.createElement("div"); d.innerHTML = `<b>${esc(m.name)}</b> ${esc(m.text)}`; $("log").appendChild(d); $("log").scrollTop = 1e9; return; }
   if (m.t === "cfg") { cfgDur = m.dur; renderLobbyBar(); return; }
   if (m.t === "start") { startGame(m); return; }
@@ -489,7 +491,7 @@ let chatPending = false, lastChatSend = 0;
 function sendChat() {
   if (performance.now() - lastChatSend < 80) return;
   const text = $("chatInput").value.trim();
-  if (text) { lastChatSend = performance.now(); emit({ t: "chat", name: myName, text }); }
+  if (text) { lastChatSend = performance.now(); emit({ t: "chat", id: myId, name: myName, text }); }
   $("chatInput").value = "";
   $("chatInput").blur();            // 보내면 바로 게임으로 돌아가기
 }
@@ -824,9 +826,11 @@ function drawObjects(y, t, chars) {
     drawChar(ctx, c.ch, cx, gy, T * 0.6, c.dir, c.z, { squash: c.squash });
     if (c.sh && !(c.blink && Math.floor(performance.now() / 100) % 2)) { ctx.strokeStyle = "rgba(77,171,247,0.9)"; ctx.fillStyle = "rgba(165,216,255,0.25)"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, gy - c.z - T * 0.18, T * 0.46, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
     if (c.name) tag((c.crown ? "👑 " : "") + c.name, cx, gy - c.z - T * 0.85, c.mine ? "#ffd43b" : "rgba(255,255,255,0.92)", "#333");
+    const bb = bubbles[c.id];
+    if (bb && performance.now() - bb.at < 4000) drawBubble(bb, cx, gy - c.z - T * 1.15);
     const em = emos[c.id];
     if (em && performance.now() - em.at < 2200) {
-      const k = (performance.now() - em.at) / 2200, ey = gy - c.z - T * 1.35 - k * 10;
+      const k = (performance.now() - em.at) / 2200, ey = gy - c.z - T * 1.35 - k * 10 - (bb && performance.now() - bb.at < 4000 ? 50 : 0);
       ctx.globalAlpha = k > 0.8 ? (1 - k) * 5 : 1;
       circle(ctx, cx, ey, 19, "#fff"); ctx.font = "24px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(em.e, cx, ey + 1);
       ctx.globalAlpha = 1;
@@ -834,6 +838,24 @@ function drawObjects(y, t, chars) {
   }
 }
 
+// 말풍선: 최대 2줄, 4초 동안 표시
+function drawBubble(bb, x, bottom) {
+  const age = performance.now() - bb.at;
+  ctx.font = "bold 14px sans-serif";
+  const lines = []; let cur = "";
+  for (const ch of bb.text) { if (ctx.measureText(cur + ch).width > 150) { lines.push(cur); cur = ch; if (lines.length === 2) break; } else cur += ch; }
+  if (lines.length < 2 && cur) lines.push(cur); else if (lines.length === 2) lines[1] = lines[1].slice(0, -1) + "…";
+  const w = Math.max(...lines.map((l) => ctx.measureText(l).width)) + 20, h = lines.length * 18 + 10;
+  const bx = Math.max(4, Math.min(CW - w - 4, x - w / 2)), by = bottom - h - 8;
+  ctx.globalAlpha = age > 3500 ? (4000 - age) / 500 : 1;
+  ctx.fillStyle = "#fff"; ctx.strokeStyle = "#495057"; ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.roundRect(bx, by, w, h, 10); ctx.fill(); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(x - 7, by + h - 1); ctx.lineTo(x, by + h + 8); ctx.lineTo(x + 7, by + h - 1); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(x - 7, by + h); ctx.lineTo(x, by + h + 8); ctx.lineTo(x + 7, by + h); ctx.stroke();
+  ctx.fillStyle = "#222"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  lines.forEach((l, i) => ctx.fillText(l, bx + w / 2, by + 14 + i * 18));
+  ctx.globalAlpha = 1;
+}
 function tag(text, x, y, bg, fg) {
   ctx.font = "bold 12px sans-serif"; const tw = ctx.measureText(text).width + 10;
   ctx.fillStyle = bg; ctx.fillRect(x - tw / 2, y - 9, tw, 17);
