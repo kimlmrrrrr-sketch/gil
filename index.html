@@ -131,7 +131,9 @@
         <div id="hostNote" class="hostnote"></div>
         <div class="keys">조작: <b>방향키</b> 또는 <b>W A S D</b> (누를 때마다 한 칸 폴짝)<br>
           🚗 차·🚂 기차에 닿으면 탈락 · 💦 물에 빠지면 탈락 (통나무·연잎만 밟기) · 🦅 너무 오래 머뭇거리면 독수리가 잡아가요!<br>
-          점수 = 앞으로 간 칸 수 (같으면 🪙 코인 많은 사람이 이겨요)</div>
+          점수 = 앞으로 간 칸 수 (같으면 🪙 코인 많은 사람이 이겨요)<br>
+          🎁 <b>선물상자</b>를 밟으면 아이템! 🛡️방패(한 번 살아남기) · 🧲자석(코인 쓸어 담기) · 🌫️안개 폭탄 · 🔄거꾸로 폭탄 → <b>Space</b>로 던지기<br>
+          <b>1~4</b> 이모티콘 😂😱👋🔥 · <b>Enter</b> 채팅 · 죽은 뒤 <b>← →</b> 로 볼 친구 바꾸기</div>
       </div>
     </div>
     <div class="card chatbox">
@@ -172,6 +174,10 @@ const CHARS = [
 ];
 const CAR_COLORS = ["#ff6b6b", "#4dabf7", "#ffd43b", "#69db7c", "#b197fc", "#ff922b", "#f783ac", "#38d9a9"];
 const DEATH_TXT = { car: "차에 치였어요! 💥", train: "기차에 치였어요! 🚂", splash: "풍덩! 물에 빠졌어요 💦", drift: "통나무와 함께 떠내려갔어요 🌊", eagle: "독수리가 잡아갔어요! 🦅" };
+const ITEMS = { shield: { emo: "🛡️", name: "방패" }, magnet: { emo: "🧲", name: "자석" }, fog: { emo: "🌫️", name: "안개 폭탄" }, swap: { emo: "🔄", name: "거꾸로 폭탄" } };
+const ITEM_KEYS = Object.keys(ITEMS);
+const EMOTES = ["😂", "😱", "👋", "🔥"];
+const DEATH_FEED = { car: "차에 깔렸어요", train: "기차에 치였어요", splash: "물에 빠졌어요", drift: "떠내려갔어요", eagle: "독수리한테 잡혀갔어요" };
 const DEATH_EMO = { car: "💥", train: "🚂", splash: "💦", drift: "🌊", eagle: "🦅" };
 
 // ===================== 작은 도구들 =====================
@@ -191,7 +197,7 @@ function makeWorld(seed) {
   const rf = (a, b) => a + rng() * (b - a);
   const W = { lanes: [], path: 4, last: "grass", riverDir: 1 };
   const diff = (y) => Math.min(1, y / 180);   // 멀리 갈수록 어려워짐 (0 → 1)
-  const WALL = { type: "grass", trees: new Set(), coins: new Set(), treeH: {}, shade: 0 };
+  const WALL = { type: "grass", trees: new Set(), coins: new Set(), treeH: {}, boxes: {}, shade: 0 };
   for (let c = -2; c <= COLS + 1; c++) { WALL.trees.add(c); WALL.treeH[c] = 1.4; }
 
   function grass(y, opt) {
@@ -207,8 +213,10 @@ function makeWorld(seed) {
     }
     for (let c = 0; c < COLS; c++) if (!trees.has(c) && y > 3 && rng() < 0.05) coins.add(c);
     for (const c of trees) treeH[c] = rng() < 0.5 ? 1 : rng() < 0.6 ? 1.4 : 1.9;
+    const boxes = {};
+    for (let c = 0; c < COLS; c++) if (!trees.has(c) && !coins.has(c) && y > 6 && rng() < 0.035) boxes[c] = ITEM_KEYS[ri(0, ITEM_KEYS.length - 1)];
     W.path = np;
-    return { type: "grass", trees, coins, treeH, shade: y % 2 };
+    return { type: "grass", trees, coins, treeH, boxes, shade: y % 2 };
   }
   function road(y) {
     const d = diff(y), dir = rng() < 0.5 ? 1 : -1, v = rf(1.4, 2.4 + 2.6 * d);
@@ -266,6 +274,7 @@ let me = null;                    // 내 캐릭터 (참가자일 때만)
 let others = {};                  // 다른 사람들
 let scores = {};                  // id → { s, c, alive, cause, x, y, name, ch }
 let cam = 1, watchId = null, watchPinned = false;
+let deaths = [], feed = [], emos = {}, itemsTaken = new Set(), fogUntil = 0, reverseUntil = 0, lastEmo = 0;
 let allDeadAt = 0, coinsTaken = new Set(), particles = [], marks = [], lastResult = null;
 
 const gt = () => (performance.now() - startLocal) / 1000;   // 게임 시간(초)
@@ -370,26 +379,40 @@ function handle(m) {
     const o = others[m.id], sc = scores[m.id]; if (!o || !sc) return;
     if (o.x !== m.x || o.y !== m.y) o.hopAt = performance.now();
     if (Math.abs(o.rx - m.x) > 4 || Math.abs(o.ry - m.y) > 4) { o.rx = m.x; o.ry = m.y; }
-    o.x = m.x; o.y = m.y; o.dir = m.d || o.dir;
+    o.x = m.x; o.y = m.y; o.dir = m.d || o.dir; o.sh = !!m.sh;
     sc.s = m.s; sc.c = m.c; sc.x = m.x; sc.y = m.y;
     return;
   }
   if (m.t === "dead") {
     const sc = scores[m.id]; if (!sc || !sc.alive) return;
     Object.assign(sc, { alive: false, s: m.s, c: m.c, cause: m.cause, x: m.x, y: m.y });
-    if (others[m.id]) { others[m.id].alive = false; marks.push({ x: m.x, y: m.y, emo: DEATH_EMO[m.cause] || "💥", t: performance.now() }); }
+    if (others[m.id]) others[m.id].alive = false;
+    // 누가 죽었는지 모두에게 잘 보이게: 납작해진 몸 + 물보라 + 독수리 + 상단 알림
+    deaths.push({ id: m.id, name: sc.name, ch: sc.ch, cause: m.cause, x: m.x, y: m.y, at: performance.now() });
+    if (m.cause === "splash" || m.cause === "drift") for (let i = 0; i < 18; i++) particles.push({ x: m.x + 0.5, y: m.y, z: 0, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 1.2, vz: 120 + Math.random() * 140, life: 0.9, color: Math.random() < 0.5 ? "#e7f8ff" : "#74c0fc" });
+    if (m.cause === "car" || m.cause === "train") for (let i = 0; i < 10; i++) particles.push({ x: m.x + 0.5, y: m.y, z: 10, vx: (Math.random() - 0.5) * 4, vy: (Math.random() - 0.5) * 1.5, vz: 100 + Math.random() * 120, life: 0.7, color: ["#ffd43b", "#fff", "#ff8787"][i % 3] });
+    pushFeed(`${DEATH_EMO[m.cause] || "💥"} ${sc.name} 님이 ${DEATH_FEED[m.cause] || "탈락했어요"}! (${m.s}칸)`);
     if (m.id !== myId) sysMsg(`${sc.name}: ${DEATH_TXT[m.cause] || "탈락!"} (${m.s}칸)`);
     renderPlayers(); return;
+  }
+  if (m.t === "feed") { pushFeed(m.text); return; }
+  if (m.t === "emo") { emos[m.id] = { e: m.e, at: performance.now() }; const sc = scores[m.id]; if (sc && !sc.alive) pushFeed(`${m.e} ${sc.name}`); return; }
+  if (m.t === "fx") {
+    const from = scores[m.from] ? scores[m.from].name : "누군가";
+    if (m.kind === "fog") { pushFeed(`🌫️ ${from} 님이 안개 폭탄을 던졌어요!`); if (m.from !== myId && me && me.alive) fogUntil = performance.now() + 4500; }
+    if (m.kind === "swap") { const to = scores[m.to] ? scores[m.to].name : "?"; pushFeed(`🔄 ${from} → ${to} 방향키 거꾸로!`); if (m.to === myId && me && me.alive) reverseUntil = performance.now() + 4000; }
+    return;
   }
   if (m.t === "end") { if (phase === "play") showResult(m.res); return; }
   if (m.t === "lobby") { phase = "lobby"; me = null; others = {}; scores = {}; world = makeWorld(777); cam = 1; $("result").classList.add("hidden"); renderPlayers(); renderLobbyBar(); return; }
 }
 
+function pushFeed(text) { feed.push({ text, at: performance.now() }); if (feed.length > 5) feed.shift(); }
 function startGame(m) {
   world = makeWorld(m.seed); world.seed = m.seed;
   parts = m.parts; dur = m.dur;
   startLocal = performance.now() + (m.ago != null ? -m.ago * 1000 : COUNTDOWN_MS);
-  phase = "play"; allDeadAt = 0; others = {}; scores = {}; particles = []; marks = []; coinsTaken = new Set();
+  phase = "play"; allDeadAt = 0; deaths = []; feed = []; emos = {}; itemsTaken = new Set(); fogUntil = 0; reverseUntil = 0; others = {}; scores = {}; particles = []; marks = []; coinsTaken = new Set();
   cam = 1; watchId = null; watchPinned = false;
   parts.forEach((p, i) => {
     const x = START_COLS[i % 8];
@@ -399,7 +422,7 @@ function startGame(m) {
     if (p.id !== myId) others[p.id] = { x: sc.x, y: sc.y, rx: sc.x, ry: sc.y, ch: p.ch, name: p.name, alive: sc.alive, dir: "u", hopAt: 0 };
   });
   const mine = m.ago == null ? parts.findIndex((p) => p.id === myId) : -1;
-  me = mine >= 0 ? { x: START_COLS[mine % 8], y: 1, fromX: 0, fromY: 0, tx: 0, ty: 1, hop: -1, dir: "u", alive: true, onLog: null, score: 0, coins: 0, queue: null, dead: null, lastSend: 0 } : null;
+  me = mine >= 0 ? { x: START_COLS[mine % 8], y: 1, fromX: 0, fromY: 0, tx: 0, ty: 1, hop: -1, dir: "u", alive: true, onLog: null, score: 0, coins: 0, queue: null, dead: null, lastSend: 0, shield: false, invUntil: 0, magnetUntil: 0, held: null } : null;
   if (m.ago != null) { const best = bestAlive(); if (best) cam = (scores[best].y || 1) - 2; }
   $("result").classList.add("hidden");
   renderPlayers(); renderLobbyBar();
@@ -461,23 +484,60 @@ function renderPlayers() {
 renderPlayers._t = 0;
 
 // ===================== 채팅 =====================
-$("chatForm").onsubmit = (e) => {
-  e.preventDefault(); const text = $("chatInput").value.trim(); if (!text) return;
-  emit({ t: "chat", name: myName, text }); $("chatInput").value = ""; $("chatInput").blur();
-};
+// 한글은 "조합 중"(ㅎ→하→한)에 Enter가 두 번 들어오는 문제가 있어서, 조합이 끝난 뒤에 보내요.
+let chatPending = false, lastChatSend = 0;
+function sendChat() {
+  if (performance.now() - lastChatSend < 80) return;
+  const text = $("chatInput").value.trim();
+  if (text) { lastChatSend = performance.now(); emit({ t: "chat", name: myName, text }); }
+  $("chatInput").value = "";
+  $("chatInput").blur();            // 보내면 바로 게임으로 돌아가기
+}
+$("chatForm").onsubmit = (e) => { e.preventDefault(); sendChat(); };
+$("chatInput").addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { e.preventDefault(); $("chatInput").blur(); return; }
+  if (e.key !== "Enter") return;
+  e.preventDefault(); e.stopPropagation();
+  if (e.isComposing || e.keyCode === 229) { chatPending = true; return; }
+  sendChat();
+});
+$("chatInput").addEventListener("compositionend", () => { if (chatPending) { chatPending = false; setTimeout(sendChat, 0); } });
 
 // ===================== 조작 =====================
 const KEYMAP = { ArrowUp: [0, 1, "u"], KeyW: [0, 1, "u"], ArrowDown: [0, -1, "d"], KeyS: [0, -1, "d"], ArrowLeft: [-1, 0, "l"], KeyA: [-1, 0, "l"], ArrowRight: [1, 0, "r"], KeyD: [1, 0, "r"] };
 addEventListener("keydown", (e) => {
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === "INPUT" || tag === "TEXTAREA") return;
-  const d = KEYMAP[e.code] || KEYMAP[e.key]; if (!d) return;
+  if (!net) return;
+  if (e.key === "Enter" && !e.isComposing) { e.preventDefault(); $("chatInput").focus(); return; }   // Enter → 채팅창으로
+  const emoIdx = ["Digit1", "Digit2", "Digit3", "Digit4"].indexOf(e.code);
+  if (emoIdx >= 0) { if (performance.now() - lastEmo > 800) { lastEmo = performance.now(); emit({ t: "emo", id: myId, e: EMOTES[emoIdx] }); } return; }
+  if (e.code === "Space") { e.preventDefault(); if (!e.repeat) useItem(); return; }
+  let d = KEYMAP[e.code] || KEYMAP[e.key]; if (!d) return;
   if (phase === "play") e.preventDefault();
   if (e.repeat) return;
+  if (phase === "play" && (!me || !me.alive) && d[1] === 0) { switchWatch(d[0]); return; }   // 죽은 뒤 ← → 로 관전 대상 바꾸기
   if (!me || !me.alive || phase !== "play" || gt() < 0) return;
+  if (performance.now() < reverseUntil) d = [-d[0], -d[1], { u: "d", d: "u", l: "r", r: "l" }[d[2]]];
   if (me.hop >= 0) { me.queue = d; return; }
   doHop(d);
 });
+function switchWatch(step) {
+  const alive = parts.filter((p) => p.id !== myId && scores[p.id] && scores[p.id].alive).map((p) => p.id);
+  if (!alive.length) return;
+  const i = alive.indexOf(watchId);
+  watchId = alive[mod((i < 0 ? 0 : i + step), alive.length)]; watchPinned = true; renderPlayers();
+}
+function useItem() {
+  if (!me || !me.alive || phase !== "play" || !me.held) return;
+  if (me.held === "fog") { emit({ t: "fx", kind: "fog", from: myId }); me.held = null; return; }
+  if (me.held === "swap") {
+    let target = null;
+    for (const p of parts) { const s = scores[p.id]; if (p.id !== myId && s && s.alive && (!target || s.s > scores[target].s)) target = p.id; }
+    if (!target) return toast("던질 상대가 없어요!");
+    emit({ t: "fx", kind: "swap", from: myId, to: target }); me.held = null;
+  }
+}
 function doHop([dx, dy, dir]) {
   me.dir = dir;
   const cur = lane(me.y), ny = me.y + dy;
@@ -491,7 +551,11 @@ function doHop([dx, dy, dir]) {
   me.fromX = me.x; me.fromY = me.y; me.tx = nx; me.ty = ny; me.hop = 0; me.onLog = null;
   sendPos(nx, ny);
 }
-function sendPos(x, y) { me.lastSend = performance.now(); send({ t: "pos", id: myId, x: Math.round(x * 100) / 100, y, d: me.dir, s: me.score, c: me.coins }); }
+function sendPos(x, y) { me.lastSend = performance.now(); send({ t: "pos", id: myId, x: Math.round(x * 100) / 100, y, d: me.dir, s: me.score, c: me.coins, sh: me.shield || performance.now() < me.invUntil ? 1 : 0 }); }
+function takeCoin(c, y) {
+  const k = c + "," + y; if (coinsTaken.has(k)) return;
+  coinsTaken.add(k); me.coins++; particles.push({ txt: "+🪙", x: c + 0.5, y, z: 0, vz: 60, life: 0.8 });
+}
 function myVis() {
   if (me.hop >= 0) { const k = Math.min(1, me.hop); return { x: lerp(me.fromX, me.tx, k), y: lerp(me.fromY, me.ty, k), z: Math.sin(k * Math.PI) * T * 0.35, row: k < 0.5 ? me.fromY : me.ty }; }
   return { x: me.x, y: me.y, z: 0, row: me.y };
@@ -504,17 +568,29 @@ function land(t) {
   } else if (L.type === "lily") {
     if (L.lilies.has(Math.round(me.x))) me.x = Math.round(me.x); else return die("splash");
   } else if (L.type === "grass") {
-    const k = me.x + "," + me.y;
-    if (L.coins.has(me.x) && !coinsTaken.has(k)) { coinsTaken.add(k); me.coins++; particles.push({ txt: "+🪙", x: me.x + 0.5, y: me.y, z: 0, vz: 60, life: 0.8 }); }
+    if (L.coins.has(me.x)) takeCoin(me.x, me.y);
+    const it = L.boxes[me.x], k = me.x + "," + me.y;
+    if (it && !itemsTaken.has(k)) {
+      itemsTaken.add(k);
+      if (it === "shield") { me.shield = true; sendPos(me.x, me.y); }
+      else if (it === "magnet") me.magnetUntil = performance.now() + 9000;
+      else me.held = it;
+      particles.push({ txt: ITEMS[it].emo + " " + ITEMS[it].name + "!", x: me.x + 0.5, y: me.y, z: 10, vz: 50, life: 1.2 });
+    }
   }
-  if (me.y > me.score) me.score = me.y;
+  if (me.y > me.score) { me.score = me.y; if (me.score % 25 === 0) emit({ t: "feed", text: `🎉 ${myName} 님이 ${me.score}칸 돌파!` }); }
   Object.assign(scores[myId], { s: me.score, c: me.coins, x: me.x, y: me.y });
 }
 function die(cause) {
   if (!me.alive) return;
   const v = myVis();
-  me.alive = false; me.dead = { cause, x: v.x, y: v.y, at: performance.now() };
-  if (cause === "splash" || cause === "drift") for (let i = 0; i < 16; i++) particles.push({ x: v.x + 0.5, y: v.y, z: 0, vx: (Math.random() - 0.5) * 3, vy: (Math.random() - 0.5) * 1.2, vz: 120 + Math.random() * 120, life: 0.9, color: Math.random() < 0.5 ? "#e7f8ff" : "#74c0fc" });
+  if ((cause === "car" || cause === "train") && performance.now() < me.invUntil) return;
+  if ((cause === "car" || cause === "train") && me.shield) {          // 방패로 한 번 버티기
+    me.shield = false; me.invUntil = performance.now() + 2000;
+    particles.push({ txt: "🛡️ 방패가 막아줬어요!", x: v.x + 0.5, y: v.y, z: 20, vz: 50, life: 1.2 });
+    emit({ t: "feed", text: `🛡️ ${myName} 님이 방패로 살아남았어요!` }); sendPos(me.x, me.y); return;
+  }
+  me.alive = false; me.dead = { cause, x: v.x, y: v.y, at: performance.now() }; me.held = null;
   emit({ t: "dead", id: myId, s: me.score, c: me.coins, cause, x: v.x, y: v.y });
   sysMsg(`나: ${DEATH_TXT[cause]} (${me.score}칸)`);
 }
@@ -549,6 +625,10 @@ function update(dt) {
       else if (t > 1.5) cam += (0.3 + Math.min(0.45, me.score / 250)) * dt;   // 화면이 천천히 위로 → 머뭇거리면 독수리
       if (me.y < cam - 0.6 && me.hop < 0) die("eagle");
     }
+    if (me.alive && performance.now() < me.magnetUntil) {      // 자석: 주변 2칸 코인 자동 획득
+      const v = myVis();
+      for (let yy = Math.round(v.y) - 2; yy <= Math.round(v.y) + 2; yy++) { if (yy < 0) continue; const L = lane(yy); if (L.type !== "grass") continue; for (const c of L.coins) if (Math.abs(c - v.x) <= 2.2) takeCoin(c, yy); }
+    }
     if (me.alive && performance.now() - me.lastSend > 1000) sendPos(me.x, me.y);
   } else {
     // 관전: 살아있는 사람 따라가기
@@ -561,7 +641,7 @@ function update(dt) {
   for (const id in others) { const o = others[id]; const k = Math.min(1, dt * 14); o.rx = lerp(o.rx, o.x, k); o.ry = lerp(o.ry, o.y, k); }
   for (const p of particles) { p.life -= dt; p.x += (p.vx || 0) * dt; p.y += (p.vy || 0) * dt; p.z += p.vz * dt; p.vz -= (p.txt ? 0 : 500) * dt; }
   particles = particles.filter((p) => p.life > 0);
-  marks = marks.filter((m) => performance.now() - m.t < 2500);
+  feed = feed.filter((f) => performance.now() - f.at < 5000);
 }
 
 // 방장: 끝났는지 확인
@@ -682,6 +762,13 @@ function drawObjects(y, t, chars) {
       box(ctx, x + T * 0.4, top + T * 0.42, T * 0.2, T * 0.2, T * 0.2, "#8d5a32", "#6e4524");
       box(ctx, x + T * 0.12, top + T * 0.16, T * 0.76, T * 0.56, T * 0.42 * hh, "#5fbf4f", "#3f9a3b", T * 0.16);
     }
+    for (const c in L.boxes) {
+      if (itemsTaken.has(c + "," + y)) continue;
+      const x = SX(+c) + T * 0.24, by = top + T * 0.3, bob = Math.sin(t * 3 + +c) * 3;
+      box(ctx, x, by, T * 0.52, T * 0.4, T * 0.34, "#be4bdb", "#9c36b5", 4 + bob);
+      ctx.fillStyle = "#ffd43b"; ctx.fillRect(x + T * 0.22, by - 4 - bob - T * 0.34, T * 0.08, T * 0.4 + T * 0.34);
+      ctx.font = "bold 16px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillStyle = "#fff"; ctx.fillText("?", x + T * 0.26, by + T * 0.4 - bob - 4 - T * 0.17);
+    }
     for (const c of L.coins) {
       if (coinsTaken.has(c + "," + y)) continue;
       const cx = SX(c) + T / 2, cy = top + T / 2 - 6 - Math.sin(t * 4 + c) * 3;
@@ -721,31 +808,58 @@ function drawObjects(y, t, chars) {
       }
     }
   }
+  // 깔린 친구는 그 자리에 납작하게 계속 남아 있어요
+  for (const d of deaths) if ((d.cause === "car" || d.cause === "train") && Math.round(d.y) === y) {
+    const cx = SX(d.x) + T / 2, gy = rowTop(d.y) + T / 2, k = Math.min(1, (performance.now() - d.at) / 200);
+    const age = (performance.now() - d.at) / 1000;
+    ctx.fillStyle = `rgba(255,70,70,${age < 2 ? 0.45 + 0.2 * Math.sin(age * 12) : 0.3})`;
+    ctx.beginPath(); ctx.ellipse(cx, gy + 4, T * 0.62, T * 0.36, 0, 0, Math.PI * 2); ctx.fill();
+    if (age < 1.2) { ctx.globalAlpha = 1 - age / 1.2; ctx.font = `${30 + age * 30}px sans-serif`; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText("💥", cx, gy - 10 - age * 20); ctx.globalAlpha = 1; }
+    drawChar(ctx, d.ch, cx, gy, T * 0.8, "d", 0, { squash: k >= 1 });
+    tag(`💀 ${d.name} 납작!`, cx, gy - T * 0.5, "rgba(201,42,42,0.9)", "#fff");
+  }
   for (const c of chars) if (c.row === y) {
-    drawChar(ctx, c.ch, SX(c.x) + T / 2, rowTop(c.y) + T / 2, T * 0.6, c.dir, c.z, { squash: c.squash });
-    if (c.name) {
-      ctx.font = "bold 12px sans-serif"; const tw = ctx.measureText(c.name).width + 10;
-      const nx = SX(c.x) + T / 2, ny = rowTop(c.y) + T / 2 - c.z - T * 0.85;
-      ctx.fillStyle = c.mine ? "#ffd43b" : "rgba(255,255,255,0.88)"; ctx.fillRect(nx - tw / 2, ny - 9, tw, 17);
-      ctx.fillStyle = "#333"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(c.name, nx, ny);
+    const cx = SX(c.x) + T / 2, gy = rowTop(c.y) + T / 2;
+    if (c.watch) { ctx.strokeStyle = "#4dabf7"; ctx.lineWidth = 3; ctx.beginPath(); ctx.ellipse(cx, gy + 6, T * 0.45, T * 0.28, 0, 0, Math.PI * 2); ctx.stroke(); }
+    drawChar(ctx, c.ch, cx, gy, T * 0.6, c.dir, c.z, { squash: c.squash });
+    if (c.sh && !(c.blink && Math.floor(performance.now() / 100) % 2)) { ctx.strokeStyle = "rgba(77,171,247,0.9)"; ctx.fillStyle = "rgba(165,216,255,0.25)"; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(cx, gy - c.z - T * 0.18, T * 0.46, 0, Math.PI * 2); ctx.fill(); ctx.stroke(); }
+    if (c.name) tag((c.crown ? "👑 " : "") + c.name, cx, gy - c.z - T * 0.85, c.mine ? "#ffd43b" : "rgba(255,255,255,0.92)", "#333");
+    const em = emos[c.id];
+    if (em && performance.now() - em.at < 2200) {
+      const k = (performance.now() - em.at) / 2200, ey = gy - c.z - T * 1.35 - k * 10;
+      ctx.globalAlpha = k > 0.8 ? (1 - k) * 5 : 1;
+      circle(ctx, cx, ey, 19, "#fff"); ctx.font = "24px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(em.e, cx, ey + 1);
+      ctx.globalAlpha = 1;
     }
   }
 }
 
+function tag(text, x, y, bg, fg) {
+  ctx.font = "bold 12px sans-serif"; const tw = ctx.measureText(text).width + 10;
+  ctx.fillStyle = bg; ctx.fillRect(x - tw / 2, y - 9, tw, 17);
+  ctx.fillStyle = fg; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(text, x, y);
+}
+function leaderId() {
+  if (parts.length < 2) return null;
+  let best = null;
+  for (const p of parts) { const s = scores[p.id]; if (s && s.alive && s.s > 0 && (!best || s.s > scores[best].s)) best = p.id; }
+  return best;
+}
 function collectChars(t) {
   const list = [];
   if (phase === "lobby") {
-    lobbyPlayers().forEach((id, i) => { const x = START_COLS[i % 8]; list.push({ x, y: 1, z: Math.abs(Math.sin(t * 3 + i)) * 6, row: 1, ch: present[id].ch || "chick", dir: "d", name: present[id].name, mine: id === myId }); });
+    lobbyPlayers().forEach((id, i) => { const x = START_COLS[i % 8]; list.push({ id, x, y: 1, z: Math.abs(Math.sin(t * 3 + i)) * 6, row: 1, ch: present[id].ch || "chick", dir: "d", name: present[id].name, mine: id === myId }); });
     return list;
   }
+  const lead = leaderId();
   for (const id in others) {
     const o = others[id]; if (!o.alive) continue;
     const k = (performance.now() - o.hopAt) / HOP_MS, z = k < 1 ? Math.sin(k * Math.PI) * T * 0.3 : 0;
-    list.push({ x: o.rx, y: o.ry, z, row: Math.round(o.ry), ch: o.ch, dir: o.dir, name: o.name });
+    list.push({ id, x: o.rx, y: o.ry, z, row: Math.round(o.ry), ch: o.ch, dir: o.dir, name: o.name, sh: o.sh, crown: id === lead, watch: (!me || !me.alive) && id === watchId });
   }
-  if (me) {
-    if (me.alive) { const v = myVis(); list.push({ x: v.x, y: v.y, z: v.z, row: Math.round(v.y), ch: scores[myId].ch, dir: me.dir, name: myName, mine: true }); }
-    else if (me.dead && (me.dead.cause === "car" || me.dead.cause === "train")) list.push({ x: me.dead.x, y: me.dead.y, z: 0, row: Math.round(me.dead.y), ch: scores[myId].ch, dir: "d", squash: true });
+  if (me && me.alive) {
+    const v = myVis(), now = performance.now();
+    list.push({ id: myId, x: v.x, y: v.y, z: v.z, row: Math.round(v.y), ch: scores[myId].ch, dir: me.dir, name: myName, mine: true, sh: me.shield || now < me.invUntil, blink: now < me.invUntil, crown: myId === lead });
   }
   return list;
 }
@@ -765,12 +879,26 @@ function draw() {
     if (p.txt) { ctx.globalAlpha = Math.max(0, p.life / 0.8); ctx.font = "bold 18px sans-serif"; ctx.textAlign = "center"; ctx.fillStyle = "#e67700"; ctx.fillText(p.txt, sx, sy - 20); ctx.globalAlpha = 1; }
     else circle(ctx, sx, sy, 4, p.color);
   }
-  for (const m of marks) { const a = 1 - (performance.now() - m.t) / 2500; ctx.globalAlpha = Math.max(0, a); ctx.font = "30px sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.fillText(m.emo, SX(m.x) + T / 2, rowTop(m.y) + T / 2 - (1 - a) * 30); ctx.globalAlpha = 1; }
-  // 독수리
-  if (me && me.dead && me.dead.cause === "eagle") {
-    const k = (performance.now() - me.dead.at) / 1000, px = SX(me.dead.x) + T / 2, py = rowTop(me.dead.y) + T / 2;
-    if (k < 0.5) drawEagle(px, lerp(-80, py - 20, k / 0.5), 34);
-    else if (k < 1.6) { const ey = lerp(py - 20, -120, (k - 0.5) / 1.1); drawChar(ctx, scores[myId].ch, px, ey + 40, T * 0.5, "d", 0); drawEagle(px, ey, 34); }
+  for (const d of deaths) {
+    const k = (performance.now() - d.at) / 1000, px = SX(d.x) + T / 2, py = rowTop(d.y) + T / 2;
+    if ((d.cause === "splash" || d.cause === "drift") && k < 1.2) {
+      ctx.strokeStyle = `rgba(255,255,255,${1 - k / 1.2})`; ctx.lineWidth = 3;
+      for (const r of [0, 0.3]) if (k > r) { ctx.beginPath(); ctx.ellipse(px, py, 10 + (k - r) * 50, 6 + (k - r) * 28, 0, 0, Math.PI * 2); ctx.stroke(); }
+      if (k < 0.6) { ctx.globalAlpha = 1 - k / 0.6; drawChar(ctx, d.ch, px, py + k * 30, T * 0.6, "d", 0); ctx.globalAlpha = 1; }
+      tag(`💦 ${d.name}`, px, py - T * 0.6, "rgba(25,113,194,0.85)", "#fff");
+    }
+    if (d.cause === "eagle" && k < 1.8) {
+      if (k < 0.5) { drawChar(ctx, d.ch, px, py, T * 0.6, "d", 0); drawEagle(px, lerp(-80, py - 20, k / 0.5), 34); }
+      else { const ey = lerp(py - 20, -120, (k - 0.5) / 1.3); drawChar(ctx, d.ch, px, ey + 40, T * 0.5, "d", 0); drawEagle(px, ey, 34); }
+    }
+  }
+  // 안개 폭탄 맞았을 때
+  const fogLeft = fogUntil - performance.now();
+  if (fogLeft > 0 && phase === "play") {
+    const a = Math.min(1, fogLeft / 600, (4500 - fogLeft) / 300);
+    const gr = ctx.createLinearGradient(0, 0, 0, CH * 0.75);
+    gr.addColorStop(0, `rgba(240,244,248,${0.97 * a})`); gr.addColorStop(0.7, `rgba(240,244,248,${0.85 * a})`); gr.addColorStop(1, "rgba(240,244,248,0)");
+    ctx.fillStyle = gr; ctx.fillRect(0, 0, CW, CH * 0.75);
   }
   drawHUD(t);
 }
@@ -788,6 +916,22 @@ function drawHUD(t) {
     ctx.font = "bold 22px sans-serif"; ctx.textAlign = "right"; const ct = "🪙 " + (focus.c || 0);
     ctx.strokeText(ct, CW - 18, 18); ctx.fillText(ct, CW - 18, 18);
   }
+  // 상단 알림 (누가 죽었는지, 아이템, 기록 돌파)
+  ctx.textAlign = "center"; ctx.textBaseline = "middle"; ctx.font = "bold 15px sans-serif";
+  feed.forEach((f, i) => {
+    const age = (performance.now() - f.at) / 5000; ctx.globalAlpha = age > 0.8 ? (1 - age) * 5 : 1;
+    const tw = ctx.measureText(f.text).width + 26, y = 140 + i * 30;
+    ctx.fillStyle = "rgba(0,0,0,0.55)"; ctx.fillRect(CW / 2 - tw / 2, y - 12, tw, 25); ctx.fillStyle = "#fff"; ctx.fillText(f.text, CW / 2, y + 1);
+    ctx.globalAlpha = 1;
+  });
+  if (me && me.alive && phase === "play") {
+    const now = performance.now(); let bx = 18;
+    const slot = (txt, hi) => { ctx.font = "bold 15px sans-serif"; const w = ctx.measureText(txt).width + 20; ctx.fillStyle = hi ? "rgba(190,75,219,0.9)" : "rgba(0,0,0,0.5)"; ctx.fillRect(bx, CH - 44, w, 30); ctx.fillStyle = "#fff"; ctx.textAlign = "left"; ctx.fillText(txt, bx + 10, CH - 28); bx += w + 8; };
+    if (me.held) slot(`[Space] ${ITEMS[me.held].emo} ${ITEMS[me.held].name} 던지기`, true);
+    if (me.shield) slot("🛡️ 방패 ON");
+    if (now < me.magnetUntil) slot(`🧲 ${Math.ceil((me.magnetUntil - now) / 1000)}초`);
+    if (now < reverseUntil) { ctx.font = "bold 30px sans-serif"; ctx.textAlign = "center"; ctx.lineWidth = 6; ctx.strokeStyle = "rgba(0,0,0,0.5)"; ctx.fillStyle = "#ff922b"; ctx.strokeText("🔄 방향키 거꾸로!", CW / 2, CH - 90); ctx.fillText("🔄 방향키 거꾸로!", CW / 2, CH - 90); }
+  }
   ctx.textAlign = "center"; ctx.textBaseline = "middle";
   if (t < 0 && phase === "play") {
     const n = Math.ceil(-t); ctx.font = "bold 110px sans-serif"; ctx.lineWidth = 10; ctx.strokeStyle = "rgba(0,0,0,0.35)"; ctx.fillStyle = "#ffd43b";
@@ -802,7 +946,7 @@ function drawHUD(t) {
     ctx.strokeText(a, CW / 2, 96); ctx.fillText(a, CW / 2, 96);
   }
   if (phase === "play" && (!me || !me.alive) && watchId && scores[watchId]) {
-    ctx.font = "bold 16px sans-serif"; const w = `👀 ${scores[watchId].name} 보는 중`;
+    ctx.font = "bold 16px sans-serif"; const w = `👀 ${scores[watchId].name} 보는 중 (← → 로 바꾸기)`;
     ctx.fillStyle = "rgba(0,0,0,0.45)"; const tw = ctx.measureText(w).width + 24; ctx.fillRect(CW / 2 - tw / 2, CH - 40, tw, 28);
     ctx.fillStyle = "#fff"; ctx.fillText(w, CW / 2, CH - 26);
   }
